@@ -1,13 +1,11 @@
 /*
-  Festlegeúng für for-Schleifen: im Kontext der ledMatrix heißen die Laufvariablen col und row
-                               im Kontext des PixelArr heißen die Laufvariablen Stripe und Pixel
-
-  Für die Arrays ledMatrix, currentTetromino und tetrominoBuffer gilt: name[spalte][zeile]
+  Festlegeúng für for-Schleifen: im Kontext der ledMatrix, des landedArr und des currentTetromino heißen die Laufvariablen col und row
+                                 im Kontext des PixelArr heißen die Laufvariablen Stripe und Pixel
+  Für die Arrays ledMatrix, landedArr, currentTetromino und tetrominoBuffer gilt: name[spalte][zeile]
   current Tetromino  03 13 23 33
-                   02 12 22 32
-                   01 11 21 31
-                   00 10 20 30
-
+                     02 12 22 32
+                     01 11 21 31
+                     00 10 20 30
 */
 //includes
 #include <Adafruit_NeoPixel.h>
@@ -26,34 +24,23 @@
 #define ledPin9 41
 
 //Buttons
-#define buttonPinReset    10
-#define buttonPinRotate   11
-#define buttonPinDefault  12
+#define buttonPinReset    44
+#define buttonPinRotate   42
+#define buttonPinDrop     46
 
-//Joystick1
-#define joyStickUp1
-#define joyStickDown1
-#define joyStickLeft1
-#define joyStickRight1
+//Joystick
+#define buttonPinLeft     38
+#define buttonPinRight    36
+#define buttonPinDown     40
+#define buttonPinUp       48 //keine Funktionalitäten zugewiesen
 
-//Joystick2
-#define joyStickUp2
-#define joyStickDown2
-#define joyStickLeft2
-#define joyStickRight2
-
-
-#define rotate  1
-#define left    2
-#define right   3
-#define fall    4
-
-int rotation = 0;
+//zeitlicher Abstand zwischen 2 Aktionen des Spielers
+#define actionDelay 100
 
 Adafruit_NeoPixel pixelArr[10];
-uint32_t landedArr[10][20];
-uint32_t ledMatrix[10][20];
-
+//interne Matrix größer als Spielfeld, damit Tetrominos von oben reinlaufen können
+uint32_t landedArr[10][25];
+uint32_t ledMatrix[10][25];
 
 //Farbdeklerationen
 //Umwandlung von RGB - Wert in 32 Bit Integer ist eine Funktion der Adafruit_NeoPixel-Objekte --> das Objekt des ersten Strips wird verwendent
@@ -65,17 +52,28 @@ uint32_t lightblue = pixelArr[0].Color(0, 255, 255);
 uint32_t yellow = pixelArr[0].Color(255, 255, 0);
 uint32_t orange = pixelArr[0].Color(255, 100, 0);
 uint32_t purple = pixelArr[0].Color(255, 0, 255);
+uint32_t white = pixelArr[0].Color(255, 255, 255);
 
 //Tetrominos
 uint32_t currentTetromino[4][4];
 uint32_t tetrominoBuffer[4][4];
-int currentX;
-int currentY;
+int currentX = 0;
+int currentY = 0;
 int nextType = 0;
 int nextRotation = 0;
 
+//Spielende
+boolean lose = false;
+
+//Regelung der Eingaben
+unsigned long lastInteraction; // Abstand zwischen Aktionen zur besseren Steuerbarkeit
+boolean rotateReleased = true; //Zwang den Rotieren-Knopf für jeden Rotationsschritt zu drücken, für bessere Steuerbarkeit
+boolean dropReleased = true; //Zwang den Sofort-Runter-Knopf für jedes Tetromino zu drücken, für bessere Steuerbarkeit
+
 void setup()
 {
+  
+
   //Definition der Pins als Out oder Input
   pinMode(ledPin0, OUTPUT);
   pinMode(ledPin1, OUTPUT);
@@ -88,15 +86,15 @@ void setup()
   pinMode(ledPin8, OUTPUT);
   pinMode(ledPin9, OUTPUT);
 
+  //Aktivierung der internen Pullup Widerstände
   pinMode(buttonPinReset, INPUT_PULLUP);
   pinMode(buttonPinRotate, INPUT_PULLUP);
-  pinMode(buttonPinDefault, INPUT_PULLUP);
+  pinMode(buttonPinDrop, INPUT_PULLUP);
+  pinMode(buttonPinLeft, INPUT_PULLUP);
+  pinMode(buttonPinRight, INPUT_PULLUP);
+  pinMode(buttonPinDown, INPUT_PULLUP);
 
-  Serial.begin(9600);
-  Serial.println("Start");
-
-  //Initialisierung des Pixelarry
-
+  //Initialisierung des Pixelarrys
   pixelArr[0] = Adafruit_NeoPixel(20, ledPin0, NEO_GRB + NEO_KHZ800);
   pixelArr[1] = Adafruit_NeoPixel(20, ledPin1, NEO_GRB + NEO_KHZ800);
   pixelArr[2] = Adafruit_NeoPixel(20, ledPin2, NEO_GRB + NEO_KHZ800);
@@ -108,58 +106,153 @@ void setup()
   pixelArr[8] = Adafruit_NeoPixel(20, ledPin8, NEO_GRB + NEO_KHZ800);
   pixelArr[9] = Adafruit_NeoPixel(20, ledPin9, NEO_GRB + NEO_KHZ800);
 
-  Serial.println("Stripes instanziert");
+  //Initialisierung der ledMatrix, des landedArr und des currentTetromino
+  for (int col = 0; col < 10; col++) {
+    for (int row = 0; row < 25; row++) {
+      ledMatrix[col][row] = 0;
+    }
+  }
 
-  //Starten der LED Stripes
+  for (int col = 0; col < 10; col++) {
+    for (int row = 0; row < 25; row++) {
+      landedArr[col][row] = 0;
+    }
+  }
+
+  for (int col = 0; col < 4; col++) {
+    for (int row = 0; row < 4; row++) {
+      currentTetromino[col][row] = 0;
+    }
+  }
+
+  //Starten der LED Stripes, setzen der Hellingkeit auf 1/8 und Farbe Schwarz
   for (int stripe = 0; stripe < 10; stripe++) {
     pixelArr[stripe].begin();
-    pixelArr[stripe].setBrightness(32);
-    for (int pixel = 0; pixel < 20; pixel++) {
+    pixelArr[stripe].setBrightness(128);
+    for (int pixel = 0; pixel < 25; pixel++) {
       pixelArr[stripe].setPixelColor(pixel, black);
     }
     pixelArr[stripe].show();
   };
-  Serial.println("Stripes gestartet und auf schwaz gesetzt");
 
-  //Initiales Tetromino
-  nextType = random(0, 7);
+  //Initialisierung der Tetrominos
+  int Random1 = random(0, 49); //zufällig gewählte Zahlen um die Random zufälliger zu machen
+  nextType = (Random1 % 7);
   nextRotation = random(0, 4);
-  generateTetromino(nextType, nextRotation);
+  generateTetromino(nextType, nextRotation, true, true);
 
   //Timer
   TCCR1A = 0;
   TCCR1B = 0;
+  TCCR1B |= (1 << CS12); // TCCR1B |= (1 << CS11)|(1<<CS10) für Prescaler 64 ~ 0,25 Sekunden   TCCR1B |= (1<<CS12) für Prescaler 256 ~ 1 Sekunde   TCCR1B |= (1<<CS12) | (1<<CS10) für Prescaler 1024 ~ 4 Sekunden
   TIMSK1 |= (1 << TOIE1); // Timer Overflow aktivieren
-
-  Serial.println("Timer konfiguriert");
 }
 
+//Interrupt Service Routine um die Abwärtsbewegung der Tetrominos zu steuern und zwischen der Runterbewegung Eingaben entgehennehmen zu können
 ISR(TIMER1_OVF_vect) {
-  lowerCurrentTetromino();
+  if (!lose) {
+    lowerCurrentTetromino();
+  }
+  else {}
 }
 
-void loop()
+void loop() //Überprüfung der Zustände auf den Button- und Joystick-Pins
 {
-  //Serial.println("Beginn der loop");
+  bool sensorButtonReset = digitalRead(buttonPinReset);
+  bool sensorButtonRotate = digitalRead(buttonPinRotate);
+  bool sensorButtonDrop = digitalRead(buttonPinDrop);
+  bool sensorButtonLeft = digitalRead(buttonPinLeft);
+  bool sensorButtonRight = digitalRead(buttonPinRight);
+  bool sensorButtonDown = digitalRead(buttonPinDown);
 
-}
 
-void wipeScreen()
-{
-  Serial.println("Wipe Screen");
-  for (int col = 0; col < 10; col++) {
-    for (int row = 0; row < 20; row++) {
-      ledMatrix[col][row] = black;
+  if (lastInteraction < (millis() - actionDelay)) { //Erzwingen, dass zwischen zwei Aktionen mindestens das actionDelay dazwischenliegen muss um Versehentliche Mehrfacheingaben durch minimal längeres Drücken zu verhinden
+    lastInteraction = millis();
 
+    //Überprüfung ob Reset Button gedrückt > Startet Spiel neu
+    if (sensorButtonReset == LOW) {
+      cli(); //sperrt ISR -> Damit die Methoden die nachfolgend aufgerufen werden bis zum Ende durchgeführt werden und nicht durch die ISR unterbrochen werden
+      wipeScreen();
+      int currentX = 0;
+      int currentY = 0;
+      int nextType = 0;
+      int nextRotation = 0;
+      setup();
+      sei(); //öffnet ISR -> damit die Abwärtsbewegung wieder ausgeführt werden kann
+    }
+    else {
+      //Überprüfung ob Rotate Button gedrückt > currentTetromino drehen
+      if (sensorButtonRotate == LOW) {
+        cli();
+        if (rotateReleased) {
+          
+          rotateReleased = false;
+          rotateCurrentTetromino();
+        }
+        sei();
+      }
+
+      else {
+        //Drehen-Button Prüfung auf losgelassen setzen
+        rotateReleased = true;
+
+        //Überprüfung ob Drop Button gedrückt
+        if (sensorButtonDrop == LOW) {
+          cli();
+          if (dropReleased) {
+            dropReleased = false;
+            dropCurrentTetromino();
+          }
+          sei();
+        }
+
+        else {
+          //Drop-Button Prüfung auf losgelassen setzen
+          dropReleased = true;
+
+          //Überprüfung ob links Button gedrückt > currentTetromino nach links
+          if (sensorButtonLeft == LOW) {
+            cli();
+            lefterCurrentTetromino();
+            sei();
+          }
+
+          else {
+            //Überprüfung ob rechts Button gedrückt > currentTetromino nach rechts
+            if (sensorButtonRight == LOW) {
+              cli();
+              righterCurrentTetromino();
+              sei();
+            }
+
+            else {
+              //Überprüfung ob unten Butteon gedrückt > currentTetromino nach unten
+              if (sensorButtonDown == LOW) {
+                cli();
+                lowerCurrentTetromino();
+                sei();
+              }
+            }
+          }
+        }
+      }
     }
   }
 }
 
+//setzt die gesamte ledMatrix auf schwarz
+void wipeScreen()
+{
+  for (int col = 0; col < 10; col++) {
+    for (int row = 0; row < 25; row++) {
+      ledMatrix[col][row] = black;
+    }
+  }
+}
+
+//schreibt das aktuelle Tetromino in die ledMatrix und setzt die LED's sodass es auch angezeigt wird
 void drawCurrentTetromino(int x, int y)
 {
-  Serial.println("DrawCurrentTetromino");
-  Serial.println(x);
-  Serial.println(y);
   for (int col = 0; col < 4; col++) {
     for (int row = 0; row < 4;  row++) {
       if (currentTetromino[col][row] != 0) {
@@ -170,54 +263,199 @@ void drawCurrentTetromino(int x, int y)
   setLeds();
 }
 
+//setzt alle Felder des currentTetromino die ungleich 0 sind (also auf der ledMatrix farblich angezeigt werden) auf schwarz
 void wipeCurrentTetromino(int x, int y) {
-  Serial.println("WipeCurrentTetromino");
   for (int col = 0; col < 4; col++) {
     for (int row = 0; row < 4;  row++) {
-      if (currentTetromino[col][row] != 0) {
+      if (currentTetromino[col][row] != 0 && landedArr[x + col][y + row] == 0) {
         ledMatrix[x + col][y + row] = black;
       }
     }
   }
 }
 
+//Falls eine Kollision entdeckt wurde, wird diese Methode aufgerufen
+//Schreibt das currentTetromino in seiner letzten Position in das landedArr
+void collisionDetected() {
+  lose = false;
+  //cli();
+  for (int col = 0; col < 4; col++) {
+    for (int row = 0; row < 4; row++) {
+      if (currentTetromino[col][row] != 0) {
+        landedArr[currentX + col][currentY + row] = currentTetromino[col][row];
+      }
+    }
+  }
+
+  //Überüft ob eine Zeile vollständig gefüllt werden konnte
+  for (int row = 0; row < 20; row ++) { //prüfen ob eine Zeile voll ist
+    int completeRow = 0;
+    for (int col = 0; col < 10; col ++) {
+      if (landedArr[col][row] != 0) {
+        completeRow++;
+      }
+    }
+    if (completeRow == 10) { //falls eine Zeile komplett gefüllt wurde
+
+      for (int col = 0; col < 10; col++) {
+        //komplette Zeile schwarz zeichnen...
+        ledMatrix[col][row] = 0;
+        landedArr[col][row] = 0;
+      }
+
+      int newRow = row + 1; //erste Zeile über der schwarz gemalten Zeile
+
+      for (newRow; newRow < 20; newRow++) { //ab einer Zeile über der schwarzen Zeile nach oben bis Zeile 19
+        for (int col = 0; col < 10; col++) {
+          //Verschieben der Zeilen über der schwarzen Zeile um jeweils eine Zeile nach unten in ledMatrix und landedArr
+          ledMatrix[col][newRow - 1] = ledMatrix[col][newRow];
+          landedArr[col][newRow - 1] = landedArr[col][newRow];
+        }
+      }
+      --row; //Damit die nach unten gerückte Zeile auch kontrolliert wird auf Vollständigkeit der Zeile und bei Bedarf mit gelöscht wird
+    }
+
+    completeRow = 0; //Rücksetzen des Zählers für volle Zeilen
+
+  } //Ende der Überprüfung für Vollständigkeit der Zeilen
+
+  //Spielende definieren -> Sobald ein currentTetromino in Zeile 20 liegt, wird lose auf true gesetzt
+  for (int col = 0; col < 10; col++) {
+    if (landedArr[col][20] != 0) {
+      lose = true;
+      break;
+    }
+  }
+
+  //Wenn lose false ist
+  if (!lose) {
+    int Random1 = random(0, 84); //zufällig gewählte Zahlen um die Random zufälliger zu machen
+    nextType = (Random1 % 7);
+    nextRotation = random(0, 4);
+    generateTetromino(nextType, nextRotation, true, true);
+  }
+
+  //Wenn lose true ist
+  else {
+    gameOver();
+  }
+}
+
+void gameOver() {
+  cli();
+  //Endanimation > Das Spielfeld wird Feld für Feld unten links beginnend farblich gefüllt
+  for (int col = 0; col < 10; col++) {
+    for (int row = 0; row < 20; row++) {
+      ledMatrix[col][row] = white;
+      setLeds();
+    }
+  }
+  lose = false; //lose zurück auf false setzen, damit das Spiel automatisch von vorne beginnen kann
+  setup();
+  sei();
+}
+
+//Zum Drehen des currentTetrominos
+void rotateCurrentTetromino() {
+  int actRotation = nextRotation; //speichern der alten Rotation falls keine Kollision auftritt
+  
+  //Zählen der Rotation umlaufend von 0..3
+  if (nextRotation == 3) {
+    nextRotation = 0;
+  }
+  else {
+    nextRotation = nextRotation + 1;
+  }
+
+  //Wenn keine Kollision auftritt
+  wipeCurrentTetromino(currentX, currentY);
+  generateTetromino(nextType, nextRotation, false, false);
+  
+  
+  //Wenn eine Kollision auftritt
+  if (checkCollision(currentX, currentY)) {
+    wipeCurrentTetromino(currentX, currentY);
+    generateTetromino(nextType, actRotation, false, false);    
+  }
+  else {
+    drawCurrentTetromino(currentX, currentY);   
+  }
+}
+
+//Bewegung des currentTetromino nach rechts -> KEINE Überführung in das landedArr bei Kollision
+void righterCurrentTetromino() {
+  //Vor dem Durchführen der Bewegung Überprüfung ob eine Kollision droht
+  if (!checkCollision(currentX + 1, currentY)) { //Falls keine Kollision droht
+    //löschen des "alten" Tetromino
+    wipeCurrentTetromino(currentX, currentY);
+    ++currentX;
+    drawCurrentTetromino(currentX, currentY);
+  }
+
+}
+
+//Bewegung des currentTetromino nach links -> KEINE Überführung in das landedArr bei Kollision
+void lefterCurrentTetromino() {
+  //Vor dem Durchführen der Bewegung Überprüfung ob eine Kollision droht
+  if (!checkCollision(currentX - 1, currentY)) {
+    //löschen des "alten" Tetrominos
+    wipeCurrentTetromino(currentX, currentY);
+    --currentX;
+    drawCurrentTetromino(currentX, currentY);
+  }
+
+}
+
+//Bewegung des currentTetromino nach unten -> Überführung in das landedArr bei Kollision
 void lowerCurrentTetromino()
 {
-  Serial.println("lowerCurrentTetromino");
-  if (!checkCollision(currentX, currentY - 1)) {//kann raus
+  //Vor dem Durchführen der Bewegung Überprüfung ob eine Kollision droht
+  if (!checkCollision(currentX, currentY - 1)) {
     //löschen des "alten" Tetromino
     wipeCurrentTetromino(currentX, currentY);
     --currentY;
     drawCurrentTetromino(currentX, currentY);
   }
+  else {
+    collisionDetected();
+  }
+}
+
+//Sofortiges Herunterfallen des currentTetromino bis zur Kollision
+void dropCurrentTetromino()
+{
+  wipeCurrentTetromino(currentX, currentY);
+
+  while (!checkCollision(currentX, currentY - 1)) {
+    --currentY;
+  }
+
+  drawCurrentTetromino(currentX, currentY);
+  setLeds();
+  collisionDetected();
 }
 
 
 //bekommt GEPLANTE Koordinaten übergeben und prüft ob eine Kollision vorhanden wäre
 //Gibt true zurück bei drohender Kollision
 boolean checkCollision(int futureX, int futureY) {
-  //TODO: Kollision mit anderen Tetrominos
-  //TODO: Kollision bei Rotation ggf. in anderen Methode
-  Serial.println("checkCollision");
-  for (int col = 0; col < 4; col++) {
-    for (int row = 0; row < 4; row++) {
+  for (int row = 0; row < 4; row++) {
+    for (int col = 0; col < 4; col++) {
       if (currentTetromino[col][row] != 0) {
-        //checken ob am unteren Rand --> neues Tetromino generieren
+        //checken ob Kollision am unteren Rand --> neues Tetromino generieren
         if ((futureY + row) < 0) {
-          Serial.println("Kollison unten");
-          nextType = random(0, 7);
-          nextRotation = random(0, 4);
-          generateTetromino(nextType, nextRotation);
           return true;
         }
-        //checken ob am linken Rand
+        //checken ob Kollision am linken Rand
         if ((futureX + col) < 0) {
-          Serial.println("Kollison links");
           return true;
         }
-        //checken ob am rechten Rand
-        if ((futureX + col) > 9) {
-          Serial.println("Kollison rechts");
+        //checken ob Kollision am rechten Rand
+        if ((futureX + col) > (9)) { // da future Y oben links liegt
+          return true;
+        }
+        //checken ob Kollision mit Tetrominos im landedArr mit bereits gelandeten Tetrominos
+        if (landedArr[futureX + col][futureY + row] != 0) {
           return true;
         }
       }
@@ -226,11 +464,9 @@ boolean checkCollision(int futureX, int futureY) {
   return false;
 }
 
-
-//Methode zum Anziegen auf der Led Matrix
+//Methode zum Anzeigen auf der Led Matrix
 void setLeds()
 {
-  Serial.println("Beginn Daten zu Strips");
   for (int stripe = 0; stripe < 10; stripe++) {
     for (int pixel = 0; pixel < 20; pixel++) {
       pixelArr[stripe].setPixelColor(pixel, ledMatrix[stripe][pixel]);
@@ -238,60 +474,65 @@ void setLeds()
     pixelArr[stripe].show();
   }
 }
-void generateTetromino(int type, int rotation)
+
+//generieren (isNew = true) oder modifzieren (isNew = false) des currentTetrominos
+void generateTetromino(int type, int rotation, bool isNew, bool isDrawing)
 {
-  //TODO: neue Übergabeparameter x und y Koordiante, Abfrage ob y > 16 für Höhenkorrektur bei betroffenen Tetrominos
-  //Achtung ganz am ende werden Momentan currentX und currentY hart gesetzt
-  Serial.println("Beginn der generateTetromino");
-  Serial.println(type);
-  Serial.println(rotation);
-  int nextTetromino = type * 4 + rotation;
-  Serial.println(nextTetromino);
-  //Wegen Debug
-  //wipeScreen();
+  int nextTetromino = type * 4 + rotation; //Es gibt 7 Tetromino-Typen mit jeweils 4 Rotationsausrichtungen
+
+  //Korrektur der Start-Position für die Tetrominos
+  int offsetY = 0;
+  int offsetX = 0;
 
   for (int i = 0; i < 4; i++) {
     for (int j = 0; j < 4; j++) {
-      currentTetromino[i][j] = black;
+      currentTetromino[i][j] = black; //Setzen des kompletten Tetrominos auf schwarz
     }
   }
+
   switch (nextTetromino) {
+    //Setzen der Felder im currentTetromino für die unterschiedlichen Tetromino-Typen und Rotationsausrichtungen
+
     //normal
     //xxxx
     //lightblue
-    case 0:
-      Serial.println("lightblue");
+    case 0:      
       currentTetromino[0][2] = lightblue;
       currentTetromino[1][2] = lightblue;
       currentTetromino[2][2] = lightblue;
       currentTetromino[3][2] = lightblue;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //rotate 1
     case 1:
-      Serial.println("lightblue");
       currentTetromino[2][0] = lightblue;
       currentTetromino[2][1] = lightblue;
       currentTetromino[2][2] = lightblue;
       currentTetromino[2][3] = lightblue;
+      offsetX = 0;
+      offsetY = 0;
       break;
 
     //rotate 2
     case 2:
-      Serial.println("lightblue");
       currentTetromino[0][1] = lightblue;
       currentTetromino[1][1] = lightblue;
       currentTetromino[2][1] = lightblue;
       currentTetromino[3][1] = lightblue;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //rotate 3
     case 3:
-      Serial.println("lightblue");
       currentTetromino[1][3] = lightblue;
       currentTetromino[1][2] = lightblue;
       currentTetromino[1][1] = lightblue;
       currentTetromino[1][0] = lightblue;
+      offsetX = 0;
+      offsetY = 0;
       break;
 
     //normal
@@ -299,38 +540,42 @@ void generateTetromino(int type, int rotation)
     //xxx
     //darkblue
     case 4:
-      Serial.println("darkblue");
       currentTetromino[0][3] = darkblue;
       currentTetromino[0][2] = darkblue;
       currentTetromino[1][2] = darkblue;
       currentTetromino[2][2] = darkblue;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //rotate 1
     case 5:
-      Serial.println("darkblue");
       currentTetromino[2][3] = darkblue;
       currentTetromino[1][3] = darkblue;
       currentTetromino[1][2] = darkblue;
       currentTetromino[1][1] = darkblue;
+      offsetX = 0;
+      offsetY = -1;
       break;
 
     //rotate 2
     case 6:
-      Serial.println("darkblue");
       currentTetromino[2][1] = darkblue;
       currentTetromino[2][2] = darkblue;
       currentTetromino[1][2] = darkblue;
       currentTetromino[0][2] = darkblue;
+      offsetX = 0;
+      offsetY = -1;
       break;
 
     //rotate 3
     case 7:
-      Serial.println("darkblue");
       currentTetromino[1][3] = darkblue;
       currentTetromino[1][2] = darkblue;
       currentTetromino[1][1] = darkblue;
       currentTetromino[0][1] = darkblue;
+      offsetX = 1;
+      offsetY = -1;
       break;
 
 
@@ -339,38 +584,42 @@ void generateTetromino(int type, int rotation)
     //xxx
     //orange
     case 8:
-      Serial.println("orange");
       currentTetromino[3][3] = orange;
       currentTetromino[3][2] = orange;
       currentTetromino[2][2] = orange;
       currentTetromino[1][2] = orange;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //rotate 1
     case 9:
-      Serial.println("orange");
       currentTetromino[2][3] = orange;
       currentTetromino[2][2] = orange;
       currentTetromino[2][1] = orange;
       currentTetromino[3][1] = orange;
+      offsetX = -1;
+      offsetY = -1;
       break;
 
     //rotate 2
     case 10:
-      Serial.println("orange");
       currentTetromino[1][1] = orange;
       currentTetromino[1][2] = orange;
       currentTetromino[2][2] = orange;
       currentTetromino[3][2] = orange;
+      offsetX = 0;
+      offsetY = -1;
       break;
 
     //rotate 3
     case 11:
-      Serial.println("orange");
       currentTetromino[1][3] = orange;
       currentTetromino[2][3] = orange;
       currentTetromino[2][2] = orange;
       currentTetromino[2][1] = orange;
+      offsetX = 0;
+      offsetY = -1;
       break;
 
     //normal
@@ -378,38 +627,42 @@ void generateTetromino(int type, int rotation)
     //xx
     //yellow
     case 12:
-      Serial.println("yellow");
       currentTetromino[1][3] = yellow;
       currentTetromino[2][3] = yellow;
       currentTetromino[1][2] = yellow;
       currentTetromino[2][2] = yellow;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //rotate 1
     case 13:
-      Serial.println("yellow");
       currentTetromino[1][3] = yellow;
       currentTetromino[2][3] = yellow;
       currentTetromino[1][2] = yellow;
       currentTetromino[2][2] = yellow;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //rotate 2
     case 14:
-      Serial.println("yellow");
       currentTetromino[1][3] = yellow;
       currentTetromino[2][3] = yellow;
       currentTetromino[1][2] = yellow;
       currentTetromino[2][2] = yellow;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //rotate 3
     case 15:
-      Serial.println("yellow");
       currentTetromino[1][3] = yellow;
       currentTetromino[2][3] = yellow;
       currentTetromino[1][2] = yellow;
       currentTetromino[2][2] = yellow;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //normal
@@ -417,38 +670,42 @@ void generateTetromino(int type, int rotation)
     //xx
     //green
     case 16:
-      Serial.println("green");
       currentTetromino[0][2] = green;
       currentTetromino[1][2] = green;
       currentTetromino[1][3] = green;
       currentTetromino[2][3] = green;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //rotate 1
     case 17:
-      Serial.println("green");
       currentTetromino[1][3] = green;
       currentTetromino[1][2] = green;
       currentTetromino[2][2] = green;
       currentTetromino[2][1] = green;
+      offsetX = 0;
+      offsetY = -1;
       break;
 
     //rotate 2
     case 18:
-      Serial.println("green");
       currentTetromino[0][1] = green;
       currentTetromino[1][1] = green;
       currentTetromino[1][2] = green;
       currentTetromino[2][2] = green;
+      offsetX = 0;
+      offsetY = -1;
       break;
 
     //rotate 3
     case 19:
-      Serial.println("green");
       currentTetromino[0][3] = green;
       currentTetromino[0][2] = green;
       currentTetromino[1][2] = green;
       currentTetromino[1][1] = green;
+      offsetX = 1;
+      offsetY = -1;
       break;
 
     //normal
@@ -456,38 +713,42 @@ void generateTetromino(int type, int rotation)
     //xxx
     //purple
     case 20:
-      Serial.println("purple");
       currentTetromino[0][2] = purple;
       currentTetromino[1][2] = purple;
       currentTetromino[1][3] = purple;
       currentTetromino[2][2] = purple;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //rotate 1
     case 21:
-      Serial.println("purple");
       currentTetromino[1][3] = purple;
       currentTetromino[1][2] = purple;
       currentTetromino[1][1] = purple;
       currentTetromino[2][2] = purple;
+      offsetX = 0;
+      offsetY = -1;
       break;
 
     //rotate 2
     case 22:
-      Serial.println("purple");
       currentTetromino[0][2] = purple;
       currentTetromino[1][2] = purple;
       currentTetromino[1][1] = purple;
       currentTetromino[2][2] = purple;
+      offsetX = 0;
+      offsetY = -1;
       break;
 
     //rotate 3
     case 23:
-      Serial.println("purple");
       currentTetromino[0][2] = purple;
       currentTetromino[1][3] = purple;
       currentTetromino[1][2] = purple;
       currentTetromino[1][1] = purple;
+      offsetX = 0;
+      offsetY = -1;
       break;
 
     //normal
@@ -495,43 +756,53 @@ void generateTetromino(int type, int rotation)
     // xx
     //red
     case 24:
-      Serial.println("red");
       currentTetromino[1][3] = red;
       currentTetromino[2][3] = red;
       currentTetromino[2][2] = red;
       currentTetromino[3][2] = red;
+      offsetX = 0;
+      offsetY = -2;
       break;
-
 
     //rotate 1
     case 25:
-      Serial.println("red");
       currentTetromino[1][1] = red;
       currentTetromino[1][2] = red;
       currentTetromino[2][2] = red;
       currentTetromino[2][3] = red;
+      offsetX = 0;
+      offsetY = -1;
       break;
-
 
     //rotate 2
     case 26:
-      Serial.println("red");
       currentTetromino[1][3] = red;
       currentTetromino[2][3] = red;
       currentTetromino[2][2] = red;
       currentTetromino[3][2] = red;
+      offsetX = 0;
+      offsetY = -2;
       break;
 
     //rotate 3
     case 27:
-      Serial.println("red");
       currentTetromino[2][1] = red;
       currentTetromino[2][2] = red;
       currentTetromino[3][2] = red;
       currentTetromino[3][3] = red;
+      offsetX = -1;
+      offsetY = -1;
       break;
   }
-  currentX = 0;
-  currentY = 16;
-  drawCurrentTetromino(currentX, currentY);
+
+  if (isNew) { //bei einem neu generierten Tetromino werden currentX und currentY auf die Startwerte gesetzt
+    currentX = 3 + offsetX;
+    currentY = 20  + offsetY;
+  }
+
+  if (isDrawing = true) { //soll das Tetromino nach dem generieren tatsächlich auch in die ledMatrix übertragen werden? -> Nicht bei der CollisionDetection für die rotateCurrentTetromino
+    if (!checkCollision(currentX, currentY)) {
+      drawCurrentTetromino(currentX, currentY);
+    }
+  }
 }
